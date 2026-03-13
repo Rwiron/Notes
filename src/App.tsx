@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, useMotionValue, useDragControls } from 'motion/react';
-import { Plus, Check, X, GripHorizontal, Link as LinkIcon } from 'lucide-react';
+import { Plus, Check, X, GripHorizontal, Link as LinkIcon, LogOut, User, Folder, ChevronDown, Edit2, Trash2, AlertTriangle, Users } from 'lucide-react';
+
+interface Project {
+  id: string;
+  name: string;
+  username?: string;
+}
 
 interface Subtask {
   id: string;
@@ -23,11 +29,22 @@ interface Connection {
   to: string;
 }
 
+interface AdminUserStat {
+  username: string;
+  projectCount: number;
+}
+
+interface AdminStats {
+  totalUsers: number;
+  users: AdminUserStat[];
+}
+
 const TaskCard = ({
   task,
   updatePosition,
   updateTitle,
   addSubtask,
+  updateSubtask,
   toggleSubtask,
   deleteTask,
   deleteSubtask,
@@ -40,6 +57,7 @@ const TaskCard = ({
   updatePosition: (id: string, x: number, y: number) => void;
   updateTitle: (id: string, title: string) => void;
   addSubtask: (taskId: string, text: string) => void;
+  updateSubtask: (taskId: string, subtaskId: string, text: string) => void;
   toggleSubtask: (taskId: string, subtaskId: string) => void;
   deleteTask: (id: string) => void;
   deleteSubtask: (taskId: string, subtaskId: string) => void;
@@ -57,6 +75,9 @@ const TaskCard = ({
     <motion.div
       id={`note-${task.id}`}
       style={{ x, y, position: 'absolute' }}
+      initial={{ opacity: 0, scale: 0.8 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ type: "spring", stiffness: 300, damping: 25 }}
       drag
       dragControls={dragControls}
       dragListener={false}
@@ -113,9 +134,14 @@ const TaskCard = ({
             >
               {st.done && <Check size={12} strokeWidth={3} />}
             </button>
-            <span className={`flex-1 text-sm ${st.done ? 'line-through text-gray-400' : 'text-gray-700'}`}>
-              {st.text}
-            </span>
+            <input
+              type="text"
+              value={st.text}
+              onChange={(e) => updateSubtask(task.id, st.id, e.target.value)}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className={`flex-1 text-sm bg-transparent outline-none ${st.done ? 'line-through text-gray-400' : 'text-gray-700'}`}
+            />
             <button onClick={(e) => { e.stopPropagation(); deleteSubtask(task.id, st.id); }} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-opacity">
               <X size={14} />
             </button>
@@ -167,11 +193,10 @@ const ConnectionsLayer = ({ connections, tasks, connectingFrom, mousePos, delete
             const visibleLine = lineGroup.querySelector('.visible-line');
             const hitArea = lineGroup.querySelector('.hit-area');
             
-            // Calculate hanging curve
-            const dx = Math.abs(x2 - x1);
-            const cx = (x1 + x2) / 2;
-            const cy = Math.max(y1, y2) + dx * 0.15 + 40;
-            const pathData = `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+            // Calculate fluid hanging curve (Cubic Bezier)
+            const distance = Math.hypot(x2 - x1, y2 - y1);
+            const sag = Math.max(distance * 0.2, 40);
+            const pathData = `M ${x1} ${y1} C ${x1} ${y1 + sag}, ${x2} ${y2 + sag}, ${x2} ${y2}`;
             
             if (visibleLine) {
               visibleLine.setAttribute('d', pathData);
@@ -193,11 +218,10 @@ const ConnectionsLayer = ({ connections, tasks, connectingFrom, mousePos, delete
           const x2 = mousePos.x;
           const y2 = mousePos.y;
           
-          // Calculate hanging curve for active line
-          const dx = Math.abs(x2 - x1);
-          const cx = (x1 + x2) / 2;
-          const cy = Math.max(y1, y2) + dx * 0.15 + 40;
-          const pathData = `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+          // Calculate fluid hanging curve for active line (Cubic Bezier)
+          const distance = Math.hypot(x2 - x1, y2 - y1);
+          const sag = Math.max(distance * 0.2, 40);
+          const pathData = `M ${x1} ${y1} C ${x1} ${y1 + sag}, ${x2} ${y2 + sag}, ${x2} ${y2}`;
           
           activeLine.setAttribute('d', pathData);
         }
@@ -242,57 +266,109 @@ const ConnectionsLayer = ({ connections, tasks, connectingFrom, mousePos, delete
 };
 
 export default function App() {
-  const [tasks, setTasks] = useState<Task[]>(() => {
-    const saved = localStorage.getItem('sticky-tasks');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { return []; }
-    }
-    return [
-      {
-        id: '1',
-        title: 'Welcome!',
-        x: 100,
-        y: 100,
-        createdAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-        subtasks: [
-          { id: crypto.randomUUID(), text: 'Drag me around by the header', done: false },
-          { id: crypto.randomUUID(), text: 'Add new pending items below', done: false },
-          { id: crypto.randomUUID(), text: 'Click the circle to complete', done: true }
-        ]
-      },
-      {
-        id: '2',
-        title: 'Connections',
-        x: 500,
-        y: 200,
-        createdAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-        subtasks: [
-          { id: crypto.randomUUID(), text: 'Click the link icon in the header', done: false },
-          { id: crypto.randomUUID(), text: 'Then click another note to connect', done: false },
-          { id: crypto.randomUUID(), text: 'Click a line to delete it', done: false }
-        ]
-      }
-    ];
-  });
+  const [token, setToken] = useState<string | null>(localStorage.getItem('sticky-token'));
+  const [username, setUsername] = useState<string>('');
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authForm, setAuthForm] = useState({ username: '', password: '' });
+  const [authError, setAuthError] = useState('');
 
-  const [connections, setConnections] = useState<Connection[]>(() => {
-    const saved = localStorage.getItem('sticky-connections');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { return []; }
-    }
-    return [{ id: crypto.randomUUID(), from: '1', to: '2' }];
-  });
-
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [isProjectsMenuOpen, setIsProjectsMenuOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editProjectName, setEditProjectName] = useState('');
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [adminStats, setAdminStats] = useState<AdminStats | null>(null);
+  const [isUsersMenuOpen, setIsUsersMenuOpen] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem('sticky-tasks', JSON.stringify(tasks));
-  }, [tasks]);
+    if (token) {
+      fetch('/api/me', { headers: { Authorization: `Bearer ${token}` } })
+        .then(res => {
+          if (!res.ok) throw new Error('Invalid token');
+          return res.json();
+        })
+        .then(data => {
+          setUsername(data.username);
+          return fetch('/api/projects', { headers: { Authorization: `Bearer ${token}` } });
+        })
+        .then(res => res.json())
+        .then(data => {
+          setProjects(data);
+          if (data.length > 0) {
+            setCurrentProjectId(data[0].id);
+          }
+          setIsAuthReady(true);
+        })
+        .catch(() => {
+          setToken(null);
+          localStorage.removeItem('sticky-token');
+          setIsAuthReady(true);
+        });
+    } else {
+      setIsAuthReady(true);
+    }
+  }, [token]);
 
   useEffect(() => {
-    localStorage.setItem('sticky-connections', JSON.stringify(connections));
-  }, [connections]);
+    if (username === 'wiron' && token) {
+      fetch('/api/admin/stats', { headers: { Authorization: `Bearer ${token}` } })
+        .then(res => res.json())
+        .then(data => {
+          if (data.totalUsers !== undefined) {
+            setAdminStats(data);
+          }
+        })
+        .catch(err => console.error('Failed to fetch admin stats', err));
+    }
+  }, [username, token]);
+
+  useEffect(() => {
+    if (!currentProjectId || !token) return;
+    fetch(`/api/projects/${currentProjectId}/state`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(res => res.json())
+      .then(data => {
+        if (data.tasks && data.tasks.length > 0) {
+          setTasks(data.tasks);
+        } else {
+          setTasks([{
+            id: crypto.randomUUID(),
+            title: 'Welcome to ' + (projects.find(p => p.id === currentProjectId)?.name || 'Project') + '!',
+            x: 100,
+            y: 100,
+            createdAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+            subtasks: [
+              { id: crypto.randomUUID(), text: 'Drag me around by the header', done: false },
+              { id: crypto.randomUUID(), text: 'Add new pending items below', done: false },
+              { id: crypto.randomUUID(), text: 'Click the circle to complete', done: true }
+            ]
+          }]);
+        }
+        if (data.connections) setConnections(data.connections);
+      });
+  }, [currentProjectId, token]);
+
+  useEffect(() => {
+    if (!isAuthReady || !token || !currentProjectId) return;
+    const timeout = setTimeout(() => {
+      fetch(`/api/projects/${currentProjectId}/state`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ tasks, connections })
+      });
+    }, 1000);
+    return () => clearTimeout(timeout);
+  }, [tasks, connections, isAuthReady, token, currentProjectId]);
 
   useEffect(() => {
     if (!connectingFrom) return;
@@ -302,6 +378,83 @@ export default function App() {
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, [connectingFrom]);
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      const res = await fetch(`/api/${authMode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(authForm)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Authentication failed');
+      localStorage.setItem('sticky-token', data.token);
+      setToken(data.token);
+      setUsername(data.username);
+    } catch (err: any) {
+      setAuthError(err.message);
+    }
+  };
+
+  const handleLogout = () => {
+    fetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    setToken(null);
+    setUsername('');
+    setTasks([]);
+    setConnections([]);
+    setProjects([]);
+    setCurrentProjectId(null);
+    localStorage.removeItem('sticky-token');
+  };
+
+  const handleCreateProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newProjectName.trim() || !token) return;
+    const res = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: newProjectName.trim() })
+    });
+    const data = await res.json();
+    setProjects([...projects, data]);
+    setCurrentProjectId(data.id);
+    setNewProjectName('');
+    setIsProjectsMenuOpen(false);
+  };
+
+  const startEditingProject = (p: Project) => {
+    setEditingProjectId(p.id);
+    setEditProjectName(p.name);
+  };
+
+  const saveProjectEdit = async (id: string) => {
+    if (!editProjectName.trim() || !token) return;
+    await fetch(`/api/projects/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: editProjectName.trim() })
+    });
+    setProjects(projects.map(p => p.id === id ? { ...p, name: editProjectName.trim() } : p));
+    setEditingProjectId(null);
+  };
+
+  const confirmDeleteProject = async () => {
+    if (!projectToDelete || !token || deleteConfirmText !== projectToDelete.name) return;
+    await fetch(`/api/projects/${projectToDelete.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    setProjects(projects.filter(p => p.id !== projectToDelete.id));
+    if (currentProjectId === projectToDelete.id) {
+      setCurrentProjectId(null);
+      setTasks([]);
+      setConnections([]);
+    }
+    setProjectToDelete(null);
+    setDeleteConfirmText('');
+  };
 
   const addTask = () => {
     const newTask: Task = {
@@ -329,6 +482,18 @@ export default function App() {
         return {
           ...t,
           subtasks: [...t.subtasks, { id: crypto.randomUUID(), text, done: false }]
+        };
+      }
+      return t;
+    }));
+  };
+
+  const updateSubtask = (taskId: string, subtaskId: string, text: string) => {
+    setTasks(tasks.map(t => {
+      if (t.id === taskId) {
+        return {
+          ...t,
+          subtasks: t.subtasks.map(st => st.id === subtaskId ? { ...st, text } : st)
         };
       }
       return t;
@@ -391,6 +556,59 @@ export default function App() {
     setConnections(connections.filter(c => c.id !== id));
   };
 
+  if (!isAuthReady) {
+    return <div className="min-h-screen w-full flex items-center justify-center bg-[#F6F09F]">Loading...</div>;
+  }
+
+  if (!token) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-[#F6F09F] relative" style={{ backgroundImage: 'radial-gradient(#e5df8d 1px, transparent 1px)', backgroundSize: '20px 20px' }}>
+        <div className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-md border border-black/5 z-10">
+          <h1 className="text-3xl font-bold text-gray-800 mb-2 text-center">Sticky Notes</h1>
+          <p className="text-gray-500 text-center mb-8">Sign in to sync your workspace</p>
+          
+          <form onSubmit={handleAuth} className="flex flex-col gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+              <input 
+                type="text" 
+                required
+                value={authForm.username}
+                onChange={e => setAuthForm({...authForm, username: e.target.value})}
+                className="w-full px-4 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                placeholder="Enter your username"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+              <input 
+                type="password" 
+                required
+                value={authForm.password}
+                onChange={e => setAuthForm({...authForm, password: e.target.value})}
+                className="w-full px-4 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                placeholder="Enter your password"
+              />
+            </div>
+            
+            {authError && <p className="text-red-500 text-sm text-center">{authError}</p>}
+            
+            <button type="submit" className="w-full bg-black text-white py-3 rounded-xl font-medium hover:bg-gray-800 transition-colors mt-2">
+              {authMode === 'login' ? 'Sign In' : 'Create Account'}
+            </button>
+          </form>
+          
+          <p className="text-center mt-6 text-sm text-gray-500">
+            {authMode === 'login' ? "Don't have an account? " : "Already have an account? "}
+            <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-blue-600 font-medium hover:underline">
+              {authMode === 'login' ? 'Sign up' : 'Sign in'}
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="min-h-screen w-full overflow-hidden relative"
@@ -401,6 +619,8 @@ export default function App() {
       }}
       onClick={() => {
         if (connectingFrom) setConnectingFrom(null);
+        setIsProjectsMenuOpen(false);
+        setIsUsersMenuOpen(false);
       }}
     >
       <ConnectionsLayer 
@@ -411,20 +631,182 @@ export default function App() {
         deleteConnection={deleteConnection}
       />
 
-      <button
-        onClick={(e) => { e.stopPropagation(); addTask(); }}
-        className="absolute top-6 left-6 z-50 bg-black text-white px-5 py-2.5 rounded-xl shadow-lg flex items-center gap-2 hover:bg-gray-800 transition-colors font-medium"
-      >
-        <Plus size={20} /> New Note
-      </button>
+      <div className="absolute top-6 left-6 z-50 flex items-center gap-4">
+        <div className="relative">
+          <button 
+            onClick={(e) => { e.stopPropagation(); setIsProjectsMenuOpen(!isProjectsMenuOpen); }} 
+            className="bg-white/90 backdrop-blur-sm px-4 py-2.5 rounded-xl shadow-sm border border-black/5 flex items-center gap-2 font-medium text-gray-800 hover:bg-white transition-colors"
+          >
+            <Folder size={18} className="text-blue-500" />
+            {(() => {
+              const currentProject = projects.find(p => p.id === currentProjectId);
+              if (!currentProject) return 'Select a Project';
+              return (
+                <>
+                  {currentProject.name}
+                  {currentProject.username && currentProject.username !== username && (
+                    <span className="text-xs text-gray-400 ml-1">({currentProject.username})</span>
+                  )}
+                </>
+              );
+            })()}
+            <ChevronDown size={16} className="text-gray-400 ml-1" />
+          </button>
+          
+          {isProjectsMenuOpen && (
+            <div 
+              className="absolute top-full left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-black/5 overflow-hidden z-50"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="max-h-60 overflow-y-auto p-2 flex flex-col gap-1">
+                {projects.length === 0 && (
+                  <div className="px-3 py-4 text-sm text-gray-500 text-center italic">
+                    No projects yet
+                  </div>
+                )}
+                {projects.map(p => (
+                  <div key={p.id} className={`group flex items-center justify-between px-2 py-1.5 rounded-lg text-sm font-medium transition-colors ${p.id === currentProjectId ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-100 text-gray-700'}`}>
+                    {editingProjectId === p.id ? (
+                      <div className="flex items-center gap-2 w-full" onClick={e => e.stopPropagation()}>
+                        <input
+                          autoFocus
+                          type="text"
+                          value={editProjectName}
+                          onChange={e => setEditProjectName(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') saveProjectEdit(p.id);
+                            if (e.key === 'Escape') setEditingProjectId(null);
+                          }}
+                          className="flex-1 px-2 py-1 text-sm rounded border border-blue-300 outline-none bg-white"
+                        />
+                        <button onClick={() => saveProjectEdit(p.id)} className="text-green-600 hover:text-green-700"><Check size={14} /></button>
+                        <button onClick={() => setEditingProjectId(null)} className="text-gray-400 hover:text-gray-600"><X size={14} /></button>
+                      </div>
+                    ) : (
+                      <>
+                        <button 
+                          onClick={() => { setCurrentProjectId(p.id); setIsProjectsMenuOpen(false); }}
+                          className="flex-1 text-left truncate px-1 py-0.5"
+                        >
+                          {p.name}
+                          {p.username && p.username !== username && (
+                            <span className="text-xs text-gray-400 ml-1">({p.username})</span>
+                          )}
+                        </button>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+                          <button onClick={() => startEditingProject(p)} className="p-1 text-gray-400 hover:text-blue-600 rounded">
+                            <Edit2 size={14} />
+                          </button>
+                          <button onClick={() => { setProjectToDelete(p); setDeleteConfirmText(''); setIsProjectsMenuOpen(false); }} className="p-1 text-gray-400 hover:text-red-600 rounded">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="p-2 border-t border-gray-100 bg-gray-50">
+                <form onSubmit={handleCreateProject} className="flex gap-2">
+                  <input 
+                    type="text" 
+                    value={newProjectName} 
+                    onChange={e => setNewProjectName(e.target.value)} 
+                    placeholder="New project..." 
+                    className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-gray-200 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                  />
+                  <button type="submit" disabled={!newProjectName.trim()} className="bg-black text-white p-1.5 rounded-lg disabled:opacity-50 hover:bg-gray-800 transition-colors">
+                    <Plus size={16} />
+                  </button>
+                </form>
+              </div>
+            </div>
+          )}
+        </div>
 
-      {tasks.map(task => (
+        {currentProjectId && (
+          <button
+            onClick={(e) => { e.stopPropagation(); addTask(); }}
+            className="bg-black text-white px-5 py-2.5 rounded-xl shadow-lg flex items-center gap-2 hover:bg-gray-800 transition-colors font-medium"
+          >
+            <Plus size={20} /> New Note
+          </button>
+        )}
+      </div>
+
+      <div className="absolute top-6 right-6 z-50 flex items-center gap-4 bg-white/80 backdrop-blur-sm px-4 py-2 rounded-xl shadow-sm border border-black/5">
+        {username === 'wiron' && adminStats !== null && (
+          <>
+            <div className="relative">
+              <button 
+                onClick={(e) => { e.stopPropagation(); setIsUsersMenuOpen(!isUsersMenuOpen); setIsProjectsMenuOpen(false); }}
+                className="flex items-center gap-2 text-indigo-600 bg-indigo-50 px-2.5 py-1.5 rounded-lg border border-indigo-100 hover:bg-indigo-100 transition-colors"
+              >
+                <Users size={16} />
+                <span className="text-sm font-bold">{adminStats.totalUsers} Users</span>
+                <ChevronDown size={14} className="text-indigo-400" />
+              </button>
+
+              {isUsersMenuOpen && (
+                <div className="absolute top-full right-0 mt-2 w-56 bg-white rounded-xl shadow-xl border border-black/10 overflow-hidden z-[100]" onClick={e => e.stopPropagation()}>
+                  <div className="px-3 py-2 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                    User Projects
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {adminStats.users.map(u => (
+                      <div key={u.username} className="flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 border-b border-gray-50 last:border-0">
+                        <span className="text-sm font-medium text-gray-700 truncate pr-2">{u.username}</span>
+                        <span className="text-xs font-bold text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full min-w-[24px] text-center">
+                          {u.projectCount}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="w-px h-4 bg-gray-300"></div>
+          </>
+        )}
+        <div className="flex items-center gap-2 text-gray-600">
+          <User size={16} />
+          <span className="text-sm font-medium">{username}</span>
+        </div>
+        <div className="w-px h-4 bg-gray-300"></div>
+        <button
+          onClick={(e) => { e.stopPropagation(); handleLogout(); }}
+          className="text-gray-500 hover:text-red-500 transition-colors flex items-center gap-1 text-sm font-medium"
+        >
+          <LogOut size={16} /> Logout
+        </button>
+      </div>
+
+      {!currentProjectId && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-40">
+          <div className="bg-white/90 backdrop-blur-md p-8 rounded-3xl shadow-xl border border-black/5 text-center pointer-events-auto max-w-sm">
+            <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Folder size={32} className="text-blue-500" />
+            </div>
+            <h2 className="text-2xl font-bold text-gray-800 mb-2">No Project Selected</h2>
+            <p className="text-gray-500 mb-6">Create a new project from the top-left menu to start adding notes.</p>
+            <button 
+              onClick={(e) => { e.stopPropagation(); setIsProjectsMenuOpen(true); }}
+              className="bg-blue-600 text-white px-6 py-3 rounded-xl font-medium hover:bg-blue-700 transition-colors w-full"
+            >
+              Create Project
+            </button>
+          </div>
+        </div>
+      )}
+
+      {currentProjectId && tasks.map(task => (
         <TaskCard
           key={task.id}
           task={task}
           updatePosition={updatePosition}
           updateTitle={updateTitle}
           addSubtask={addSubtask}
+          updateSubtask={updateSubtask}
           toggleSubtask={toggleSubtask}
           deleteTask={deleteTask}
           deleteSubtask={deleteSubtask}
@@ -434,6 +816,47 @@ export default function App() {
           isConnectingTarget={connectingFrom !== null && connectingFrom !== task.id}
         />
       ))}
+
+      {projectToDelete && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4" onClick={() => setProjectToDelete(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 text-red-600 mb-4">
+              <AlertTriangle size={24} />
+              <h2 className="text-xl font-bold">Delete Project</h2>
+            </div>
+            <p className="text-gray-600 mb-4">
+              Are you sure you want to delete <strong>{projectToDelete.name}</strong>? This action cannot be undone and will permanently delete all notes inside it.
+            </p>
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Please type <strong>{projectToDelete.name}</strong> to confirm:
+              </label>
+              <input
+                type="text"
+                value={deleteConfirmText}
+                onChange={e => setDeleteConfirmText(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-xl outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500"
+                placeholder={projectToDelete.name}
+              />
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setProjectToDelete(null)}
+                className="px-4 py-2 text-gray-600 font-medium hover:bg-gray-100 rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteProject}
+                disabled={deleteConfirmText !== projectToDelete.name}
+                className="px-4 py-2 bg-red-600 text-white font-medium rounded-xl hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Delete Project
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
